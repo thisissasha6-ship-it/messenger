@@ -1,0 +1,9 @@
+{
+  "appId": "com.example.messenger",
+  "appName": "Мессенджер",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  }
+}
