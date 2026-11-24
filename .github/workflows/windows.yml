@@ -1,0 +1,26 @@
+name: Build Windows
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Подготовка веб-части
+        shell: bash
+        run: |
+          npm install
+          cp -r www desktop/www
+      - name: Сборка
+        working-directory: desktop
+        run: |
+          npm install
+          npx electron-builder --win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: messenger-windows
+          path: desktop/dist/*.exe
