@@ -104,7 +104,6 @@ input,textarea{font:inherit;color:var(--tx)}
   <div class="card">
     <div class="logo"><svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg></div>
     <h1 id="ttl">Вход</h1>
-    <input id="srv" class="hide" placeholder="Адрес сервера (https://…)" autocapitalize="off" autocorrect="off">
     <input id="un" placeholder="Логин" autocapitalize="off" autocorrect="off">
     <input id="nm" class="hide" placeholder="Имя">
     <input id="pw" type="password" placeholder="Пароль">
@@ -166,31 +165,33 @@ input,textarea{font:inherit;color:var(--tx)}
 </div>
 <div id="toast" class="toast hide"></div>
 
-<script src="socket.io.min.js"></script>
+<script src="supabase.js"></script>
 <script>
+const SB_URL = 'https://jbshvqnutujptnrbcgwd.supabase.co';
+const SB_KEY = 'sb_publishable_u9gcK9sPoFMHNxo69JYwLw_BziGa_Et';
+// TURN-сервер для звонков между мобильными сетями (необязательно), например:
+// {urls:'turn:адрес:3478', username:'логин', credential:'пароль'}
+const TURN = null;
+const ICE = [{ urls: 'stun:stun.l.google.com:19302' }].concat(TURN ? [TURN] : []);
+const sb = supabase.createClient(SB_URL, SB_KEY);
+
 const $ = i => document.getElementById(i);
 const NATIVE = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
-const getLS = k => { try { return localStorage.getItem(k) || '' } catch (e) { return '' } };
-const setLS = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k) } catch (e) {} };
 const COL = ['#e17076', '#7bc862', '#e5ca77', '#65aadd', '#a695e7', '#ee7aae', '#6ec9cb', '#faa774'];
-let base = NATIVE ? getLS('server') : location.origin, token = getLS('token');
-let me, sock, peer, msgs = [], online = new Set(), ICE = [{ urls: 'stun:stun.l.google.com:19302' }], mode = 'login', lbFile = '';
+let me, peer, msgs = [], rows = [], online = new Set(), mode = 'login', lbPath = '', sig, pres, started = false;
 
 const esc = s => { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML };
 const hm = ts => { const d = new Date(ts); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) };
 const ini = n => (n || '?').trim().charAt(0).toUpperCase();
-const av = (u, c) => '<div class="av ' + (c || '') + '" style="background:' + COL[u.id % COL.length] + '">' + esc(ini(u.name)) + (online.has(u.id) && !c ? '<span class="dot"></span>' : '') + '</div>';
+const hue = s => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return COL[h % COL.length] };
+const av = (u, c) => '<div class="av ' + (c || '') + '" style="background:' + hue(u.id) + '">' + esc(ini(u.name)) + (online.has(u.id) && !c ? '<span class="dot"></span>' : '') + '</div>';
 const tick = '<svg viewBox="0 0 18 12"><path d="M1 6.5l3.5 3.5L11 2M7 10l.5.5L15 2"/></svg>';
+const imgUrl = (p, dl) => sb.storage.from('images').getPublicUrl(p, dl ? { download: true } : undefined).data.publicUrl;
 let tt; function toast(t) { const e = $('toast'); e.textContent = t; e.classList.remove('hide'); clearTimeout(tt); tt = setTimeout(() => e.classList.add('hide'), 2600) }
 
-async function api(p, o = {}) {
-  const r = await fetch(base + p, { ...o, headers: { ...(o.headers || {}), Authorization: 'Bearer ' + token } });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || 'Ошибка сети');
-  return j;
-}
-
 /* ---------- вход и регистрация ---------- */
+// Supabase требует email, поэтому логин превращается в служебный адрес. Письма не отправляются.
+const mail = u => u + '@gmail.com';
 function authMode(m) {
   mode = m; $('err').textContent = '';
   $('ttl').textContent = m === 'login' ? 'Вход' : 'Регистрация';
@@ -199,59 +200,94 @@ function authMode(m) {
   $('nm').classList.toggle('hide', m === 'login');
 }
 $('sw').onclick = () => authMode(mode === 'login' ? 'register' : 'login');
-if (NATIVE) { $('srv').classList.remove('hide'); $('srv').value = base; }
+function errTx(e) {
+  const m = (e.message || '').toLowerCase();
+  if (m.includes('already registered')) return 'Этот логин уже занят';
+  if (m.includes('invalid login')) return 'Неверный логин или пароль';
+  if (m.includes('database error')) return 'Не удалось создать профиль, попробуйте другой логин';
+  if (m.includes('rate limit')) return 'Слишком много попыток, подождите минуту';
+  if (m.includes('fetch') || m.includes('network')) return 'Нет связи с сервером';
+  return e.message;
+}
 $('go').onclick = async () => {
-  try {
-    if (NATIVE) {
-      base = $('srv').value.trim().replace(/\/$/, '');
-      if (!/^https?:\/\/.+/.test(base)) throw new Error('Укажите адрес сервера, например https://example.com');
-      setLS('server', base);
-    }
-    const r = await fetch(base + '/api/' + mode, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: $('un').value, password: $('pw').value, name: $('nm').value }) });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error);
-    token = j.token; setLS('token', token); start();
-  } catch (e) { $('err').textContent = e.message === 'Failed to fetch' ? 'Не удаётся подключиться к серверу' : e.message }
+  const un = $('un').value.trim().toLowerCase(), pw = $('pw').value, nm = $('nm').value.trim();
+  $('err').textContent = '';
+  if (!/^[a-z0-9_]{3,20}$/.test(un)) return $('err').textContent = 'Логин: 3–20 символов, латиница, цифры, _';
+  if (pw.length < 6) return $('err').textContent = 'Пароль: минимум 6 символов';
+  $('go').disabled = true;
+  const r = mode === 'login'
+    ? await sb.auth.signInWithPassword({ email: mail(un), password: pw })
+    : await sb.auth.signUp({ email: mail(un), password: pw, options: { data: { username: un, name: nm || un } } });
+  $('go').disabled = false;
+  if (r.error) return $('err').textContent = errTx(r.error);
+  if (!r.data.session) return $('err').textContent = 'Аккаунт создан. Нажмите «Войти».';
+  start(r.data.session.user);
 };
-$('out').onclick = () => { setLS('token', ''); location.reload() };
+$('out').onclick = async () => { await sb.auth.signOut(); location.reload() };
 
-async function start() {
-  if (!token) return;
-  try { me = await api('/api/me') } catch (e) { if (!NATIVE || base) { setLS('token', ''); token = ''; } return }
-  try { ICE = (await api('/api/ice')).iceServers } catch (e) {}
+async function start(user) {
+  if (started) return;
+  const { data } = await sb.from('profiles').select('id,username,name').eq('id', user.id).single();
+  if (!data) { await sb.auth.signOut(); return }
+  started = true; me = data;
   $('auth').classList.add('hide'); $('app').classList.remove('hide');
-  sock = io(base, { auth: { token } });
-  sock.on('online', a => { online = new Set(a); loadList(); head() });
-  sock.on('presence', d => { d.on ? online.add(d.id) : online.delete(d.id); loadList(); head() });
-  sock.on('msg', onMsg);
-  calls();
+  sb.channel('msgs')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'receiver=eq.' + me.id }, p => onMsg(p.new))
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'sender=eq.' + me.id }, p => onMsg(p.new))
+    .subscribe();
+  pres = sb.channel('online', { config: { presence: { key: me.id } } });
+  pres.on('presence', { event: 'sync' }, () => { online = new Set(Object.keys(pres.presenceState())); loadList(); head() })
+    .subscribe(s => { if (s === 'SUBSCRIBED') pres.track({ t: Date.now() }) });
+  sig = sb.channel('calls', { config: { broadcast: { self: false } } });
+  sig.on('broadcast', { event: 'sig' }, ({ payload }) => onSig(payload)).subscribe();
   loadList();
 }
+sb.auth.getSession().then(({ data }) => { if (data.session) start(data.session.user) });
 
 /* ---------- список чатов и поиск ---------- */
 async function loadList() {
-  const q = $('q').value.trim();
-  let rows;
-  try { rows = await api(q ? '/api/users?q=' + encodeURIComponent(q) : '/api/chats') } catch (e) { return }
-  window._rows = rows;
+  if (!me) return;
+  const q = $('q').value.trim().replace(/[^\p{L}\p{N}_]/gu, '');
+  if (q) {
+    const { data } = await sb.from('profiles').select('id,username,name').neq('id', me.id)
+      .or('username.ilike.%' + q + '%,name.ilike.%' + q + '%').limit(20);
+    rows = data || [];
+  } else {
+    const { data: ms } = await sb.from('messages').select('*').or('sender.eq.' + me.id + ',receiver.eq.' + me.id)
+      .order('created_at', { ascending: false }).limit(500);
+    const last = {}, unread = {};
+    (ms || []).forEach(m => {
+      const o = m.sender === me.id ? m.receiver : m.sender;
+      if (!last[o]) last[o] = m;
+      if (m.receiver === me.id && !m.seen) unread[o] = (unread[o] || 0) + 1;
+    });
+    const ids = Object.keys(last);
+    const ps = ids.length ? (await sb.from('profiles').select('id,username,name').in('id', ids)).data || [] : [];
+    rows = ids.map(id => ({ ...(ps.find(x => x.id === id) || { id, name: '?', username: '' }), last: last[id], unread: unread[id] || 0 }));
+  }
   $('list').innerHTML = rows.length ? rows.map((u, i) => {
     const on = peer && peer.id === u.id ? ' on' : '';
-    const pre = q ? '@' + esc(u.username) : (u.frm === me.id ? 'Вы: ' : '') + (u.img ? '🖼 Фото' + (u.text ? ', ' : '') : '') + esc(u.text);
-    return '<div class="chat' + on + '" data-i="' + i + '">' + av(u) + '<div class="mid"><div class="row"><span class="nm">' + esc(u.name) + '</span><span class="tm">' + (u.ts && !q ? hm(u.ts) : '') + '</span></div><div class="row"><span class="sub">' + pre + '</span>' + (u.unread ? '<span class="bdg">' + u.unread + '</span>' : '') + '</div></div></div>';
+    const pre = q ? '@' + esc(u.username) : (u.last.sender === me.id ? 'Вы: ' : '') + (u.last.image ? '🖼 Фото' + (u.last.body ? ', ' : '') : '') + esc(u.last.body);
+    return '<div class="chat' + on + '" data-i="' + i + '">' + av(u) + '<div class="mid"><div class="row"><span class="nm">' + esc(u.name) + '</span><span class="tm">' + (u.last && !q ? hm(u.last.created_at) : '') + '</span></div><div class="row"><span class="sub">' + pre + '</span>' + (u.unread ? '<span class="bdg">' + u.unread + '</span>' : '') + '</div></div></div>';
   }).join('') : '<div class="note">' + (q ? 'Никого не нашли' : 'Чатов пока нет. Найдите человека по логину в поиске.') + '</div>';
 }
-$('list').onclick = e => { const c = e.target.closest('.chat'); if (c) openChat(window._rows[+c.dataset.i]) };
+$('list').onclick = e => { const c = e.target.closest('.chat'); if (c) openChat(rows[+c.dataset.i]) };
 $('q').oninput = loadList;
 
 /* ---------- переписка ---------- */
+async function markSeen() {
+  await sb.from('messages').update({ seen: true }).eq('sender', peer.id).eq('receiver', me.id).eq('seen', false);
+  loadList();
+}
 async function openChat(u) {
   peer = { id: u.id, name: u.name, username: u.username };
-  const r = await api('/api/messages/' + u.id);
-  msgs = r.msgs;
+  const { data } = await sb.from('messages').select('*')
+    .or('and(sender.eq.' + me.id + ',receiver.eq.' + peer.id + '),and(sender.eq.' + peer.id + ',receiver.eq.' + me.id + ')')
+    .order('created_at', { ascending: false }).limit(200);
+  msgs = (data || []).reverse();
   $('empty').classList.add('hide'); $('pane').classList.remove('hide');
   $('app').classList.add('open');
-  head(); draw(); loadList();
+  head(); draw(); markSeen();
 }
 function head() {
   if (!peer) return;
@@ -262,25 +298,29 @@ function head() {
 }
 function draw() {
   $('msgs').innerHTML = msgs.length ? msgs.map(m => {
-    const mine = m.frm === me.id;
-    const meta = '<span class="meta">' + hm(m.ts) + (mine ? tick : '') + '</span>';
-    if (m.img) return '<div class="msg pic ' + (mine ? 'me' : 'you') + '"><img src="' + base + '/uploads/' + m.img + '" data-f="' + m.img + '" alt="Фото" loading="lazy">' + (m.text ? '<div class="cap">' + esc(m.text) + '</div>' : '') + meta + '</div>';
-    return '<div class="msg ' + (mine ? 'me' : 'you') + '">' + esc(m.text) + meta + '</div>';
+    const mine = m.sender === me.id;
+    const meta = '<span class="meta">' + hm(m.created_at) + (mine ? tick : '') + '</span>';
+    if (m.image) return '<div class="msg pic ' + (mine ? 'me' : 'you') + '"><img src="' + imgUrl(m.image) + '" data-f="' + esc(m.image) + '" alt="Фото" loading="lazy">' + (m.body ? '<div class="cap">' + esc(m.body) + '</div>' : '') + meta + '</div>';
+    return '<div class="msg ' + (mine ? 'me' : 'you') + '">' + esc(m.body) + meta + '</div>';
   }).join('') : '<div class="empty">Напишите первое сообщение</div>';
   $('msgs').scrollTop = $('msgs').scrollHeight;
 }
 function onMsg(m) {
-  if (peer && (m.frm === peer.id || m.to_ === peer.id)) {
-    msgs.push(m); draw();
-    if (m.frm === peer.id) sock.emit('seen', peer.id);
+  const other = m.sender === me.id ? m.receiver : m.sender;
+  if (peer && other === peer.id) {
+    if (!msgs.some(x => x.id === m.id)) { msgs.push(m); draw() }
+    if (m.sender === peer.id) markSeen();
   }
   loadList();
 }
-function send(img) {
+async function send(img) {
   const t = $('inp').value.trim();
   if (!peer || (!t && !img)) return;
-  sock.emit('msg', { to: peer.id, text: t, img: img || null }, r => { if (!r || r.error) toast('Не отправлено') });
   $('inp').value = ''; $('inp').style.height = '46px';
+  const { data, error } = await sb.from('messages').insert({ sender: me.id, receiver: peer.id, body: t, image: img || null }).select().single();
+  if (error) { toast('Не отправлено'); $('inp').value = t; return }
+  if (!msgs.some(x => x.id === data.id)) { msgs.push(data); draw() }
+  loadList();
 }
 $('send').onclick = () => send();
 $('inp').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); send() } };
@@ -292,40 +332,44 @@ $('att').onclick = () => $('file').click();
 $('file').onchange = async e => {
   const f = e.target.files[0]; e.target.value = '';
   if (!f || !peer) return;
-  if (!/^image\/(jpeg|png|webp|gif)$/.test(f.type)) return toast('Поддерживаются JPG, PNG, WebP и GIF');
-  try {
-    toast('Отправка…');
-    const r = await fetch(base + '/api/upload', { method: 'POST', headers: { 'Content-Type': f.type, Authorization: 'Bearer ' + token }, body: f });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error);
-    send(j.img);
-  } catch (x) { toast(x.message || 'Не удалось загрузить') }
+  const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' }[f.type];
+  if (!ext) return toast('Поддерживаются JPG, PNG, WebP и GIF');
+  if (f.size > 15 * 1024 * 1024) return toast('Картинка больше 15 МБ');
+  toast('Отправка…');
+  const path = me.id + '/' + crypto.randomUUID() + '.' + ext;
+  const { error } = await sb.storage.from('images').upload(path, f, { contentType: f.type });
+  if (error) return toast('Не удалось загрузить картинку');
+  send(path);
 };
-$('msgs').onclick = e => { const i = e.target.closest('img[data-f]'); if (i) { lbFile = i.dataset.f; $('lbi').src = base + '/uploads/' + lbFile; $('lb').classList.remove('hide') } };
+$('msgs').onclick = e => { const i = e.target.closest('img[data-f]'); if (i) { lbPath = i.dataset.f; $('lbi').src = imgUrl(lbPath); $('lb').classList.remove('hide') } };
 $('lx').onclick = () => $('lb').classList.add('hide');
 $('lb').onclick = e => { if (e.target.classList.contains('im') || e.target === $('lb')) $('lb').classList.add('hide') };
 $('dl').onclick = async () => {
-  const url = base + '/uploads/' + lbFile + '?dl=1';
+  const url = imgUrl(lbPath, true), fn = lbPath.split('/').pop();
   const FS = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.Filesystem;
   if (NATIVE && FS) {
-    try { await FS.downloadFile({ url, path: 'Messenger/' + lbFile, directory: 'DOCUMENTS', recursive: true }); toast('Сохранено: Documents/Messenger') }
+    try { await FS.downloadFile({ url, path: 'Messenger/' + fn, directory: 'DOCUMENTS', recursive: true }); toast('Сохранено: Documents/Messenger') }
     catch (e) { toast('Не удалось сохранить') }
   } else {
-    const a = document.createElement('a'); a.href = url; a.download = lbFile; document.body.appendChild(a); a.click(); a.remove();
+    const a = document.createElement('a'); a.href = url; a.download = fn; document.body.appendChild(a); a.click(); a.remove();
   }
 };
 
-/* ---------- звонки (WebRTC) ---------- */
+/* ---------- звонки (WebRTC, сигналы через Supabase Realtime) ---------- */
 let pc, stream, callPeer = null, offer = null, queue = [], micOn = true, camOn = true;
+const emit = p => sig.send({ type: 'broadcast', event: 'sig', payload: { ...p, from: me.id, name: me.name } });
 function callUI(name, status, st) {
   $('call').classList.remove('hide'); $('cn').textContent = name; $('cs').textContent = status;
   $('ca').classList.toggle('hide', st !== 'in'); $('cm').classList.toggle('hide', st !== 'live'); $('cc').classList.toggle('hide', st !== 'live');
 }
 function mkPC(id) {
   pc = new RTCPeerConnection({ iceServers: ICE });
-  pc.onicecandidate = e => e.candidate && sock.emit('call:ice', { to: id, c: e.candidate });
+  pc.onicecandidate = e => e.candidate && emit({ type: 'ice', to: id, c: e.candidate.toJSON() });
   pc.ontrack = e => { $('rv').srcObject = e.streams[0] };
-  pc.onconnectionstatechange = () => { if (pc && pc.connectionState === 'connected') $('cs').textContent = 'Соединено'; if (pc && ['failed', 'closed'].includes(pc.connectionState)) endCall(false, 'Связь потеряна') };
+  pc.onconnectionstatechange = () => {
+    if (pc && pc.connectionState === 'connected') $('cs').textContent = 'Соединено';
+    if (pc && ['failed', 'closed'].includes(pc.connectionState)) endCall(false, 'Связь потеряна');
+  };
   stream.getTracks().forEach(t => pc.addTrack(t, stream));
 }
 async function media(video) {
@@ -339,26 +383,30 @@ async function startCall(video) {
   try { await media(video) } catch (e) { toast('Нет доступа к микрофону или камере'); return endCall(false) }
   mkPC(callPeer);
   const o = await pc.createOffer(); await pc.setLocalDescription(o);
-  sock.emit('call:offer', { to: callPeer, sdp: o, video });
+  emit({ type: 'offer', to: callPeer, sdp: { type: o.type, sdp: o.sdp }, video });
 }
-function calls() {
-  sock.on('call:offer', d => {
-    if (callPeer) return sock.emit('call:end', { to: d.from, busy: 1 });
+async function onSig(d) {
+  if (!d || d.to !== me.id) return;
+  if (d.type === 'offer') {
+    if (callPeer) return emit({ type: 'end', to: d.from, busy: 1 });
     callPeer = d.from; offer = d; callUI(d.name, d.video ? 'Видеозвонок' : 'Аудиозвонок', 'in');
-  });
-  sock.on('call:answer', async d => { if (pc && d.from === callPeer) { await pc.setRemoteDescription(d.sdp); await flush(); callUI($('cn').textContent, 'Соединение…', 'live') } });
-  sock.on('call:ice', d => { if (d.from !== callPeer) return; pc && pc.remoteDescription ? pc.addIceCandidate(d.c).catch(() => {}) : queue.push(d.c) });
-  sock.on('call:end', d => { if (d.from === callPeer) endCall(false, d.busy ? 'Абонент занят' : 'Звонок завершён') });
+  } else if (d.type === 'answer' && pc && d.from === callPeer) {
+    await pc.setRemoteDescription(d.sdp); await flush(); callUI($('cn').textContent, 'Соединение…', 'live');
+  } else if (d.type === 'ice' && d.from === callPeer) {
+    pc && pc.remoteDescription ? pc.addIceCandidate(d.c).catch(() => {}) : queue.push(d.c);
+  } else if (d.type === 'end' && d.from === callPeer) {
+    endCall(false, d.busy ? 'Абонент занят' : 'Звонок завершён');
+  }
 }
 $('ca').onclick = async () => {
   const d = offer; offer = null;
   try { await media(d.video) } catch (e) { toast('Нет доступа к микрофону или камере'); return endCall(true) }
   mkPC(d.from); await pc.setRemoteDescription(d.sdp); await flush();
   const a = await pc.createAnswer(); await pc.setLocalDescription(a);
-  sock.emit('call:answer', { to: d.from, sdp: a }); callUI($('cn').textContent, 'Соединение…', 'live');
+  emit({ type: 'answer', to: d.from, sdp: { type: a.type, sdp: a.sdp } }); callUI($('cn').textContent, 'Соединение…', 'live');
 };
 function endCall(notify, msg) {
-  if (notify && callPeer) sock.emit('call:end', { to: callPeer });
+  if (notify && callPeer) emit({ type: 'end', to: callPeer });
   if (stream) stream.getTracks().forEach(t => t.stop());
   if (pc) { pc.onconnectionstatechange = null; pc.close() }
   pc = stream = callPeer = offer = null; queue = [];
@@ -370,8 +418,6 @@ $('vc').onclick = () => startCall(false);
 $('vv').onclick = () => startCall(true);
 $('cm').onclick = () => { micOn = !micOn; stream.getAudioTracks().forEach(t => t.enabled = micOn); $('cm').textContent = micOn ? '🎙' : '🔇' };
 $('cc').onclick = () => { camOn = !camOn; stream.getVideoTracks().forEach(t => t.enabled = camOn); $('cc').textContent = camOn ? '📷' : '🚫' };
-
-start();
 </script>
 </body>
 </html>
