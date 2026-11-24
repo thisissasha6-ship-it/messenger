@@ -1,0 +1,33 @@
+{
+  "name": "messenger-desktop",
+  "version": "1.0.0",
+  "description": "Messenger",
+  "author": "Messenger",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.example.messenger",
+    "productName": "Messenger",
+    "files": ["main.js", "www/**/*"],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Messenger-Setup-${version}.${ext}"
+    },
+    "portable": { "artifactName": "Messenger-Portable-${version}.${ext}" }
+  }
+}

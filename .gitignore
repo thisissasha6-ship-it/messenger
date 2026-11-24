@@ -1,3 +1,6 @@
 node_modules
 android
 www/supabase.js
+desktop/node_modules
+desktop/dist
+desktop/www
