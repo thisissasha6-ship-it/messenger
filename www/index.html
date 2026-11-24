@@ -96,6 +96,20 @@ input,textarea{font:inherit;color:var(--tx)}
 .back{display:grid}
 }
 @media (prefers-reduced-motion:reduce){.main{transition:none}}
+*{scrollbar-width:thin;scrollbar-color:#8885 transparent}
+.msg{user-select:text}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+@media (min-width:761px){
+.side{width:clamp(300px,28vw,400px)}
+.main{position:relative}
+.msgs{padding:16px max(16px,calc((100% - 780px)/2))}
+.bar{padding-left:max(10px,calc((100% - 780px)/2));padding-right:max(10px,calc((100% - 780px)/2))}
+.msg{max-width:min(520px,70%)}
+.card{max-width:380px}
+.chat{padding:8px 10px}
+#rv{object-fit:contain}
+.main.drop::after{content:"Отпустите, чтобы отправить картинку";position:absolute;inset:12px;border:2px dashed var(--acc);border-radius:16px;background:#000a;color:#fff;display:grid;place-items:center;font-size:18px;z-index:20;pointer-events:none}
+}
 </style>
 </head>
 <body>
@@ -117,7 +131,7 @@ input,textarea{font:inherit;color:var(--tx)}
   <aside class="side">
     <div class="top">
       <button class="ib" id="out" aria-label="Выйти"><svg viewBox="0 0 24 24"><path d="M10 17l1.4-1.4L8.8 13H20v-2H8.8l2.6-2.6L10 7l-5 5zM4 5h8V3H4a2 2 0 00-2 2v14a2 2 0 002 2h8v-2H4z"/></svg></button>
-      <input class="search" id="q" placeholder="Поиск людей и чатов" aria-label="Поиск">
+      <input class="search" id="q" placeholder="Поиск (Ctrl+K)" aria-label="Поиск">
     </div>
     <div class="list" id="list"></div>
   </aside>
@@ -166,6 +180,7 @@ input,textarea{font:inherit;color:var(--tx)}
 <div id="toast" class="toast hide"></div>
 
 <script src="supabase.js"></script>
+<script>window.supabase||document.write('<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"><\/script>')</script>
 <script>
 const SB_URL = 'https://jbshvqnutujptnrbcgwd.supabase.co';
 const SB_KEY = 'sb_publishable_u9gcK9sPoFMHNxo69JYwLw_BziGa_Et';
@@ -180,6 +195,7 @@ const NATIVE = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.is
 const COL = ['#e17076', '#7bc862', '#e5ca77', '#65aadd', '#a695e7', '#ee7aae', '#6ec9cb', '#faa774'];
 let me, peer, msgs = [], rows = [], online = new Set(), mode = 'login', lbPath = '', sig, pres, started = false;
 
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16) }));
 const esc = s => { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML };
 const hm = ts => { const d = new Date(ts); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) };
 const ini = n => (n || '?').trim().charAt(0).toUpperCase();
@@ -265,6 +281,8 @@ async function loadList() {
     const ps = ids.length ? (await sb.from('profiles').select('id,username,name').in('id', ids)).data || [] : [];
     rows = ids.map(id => ({ ...(ps.find(x => x.id === id) || { id, name: '?', username: '' }), last: last[id], unread: unread[id] || 0 }));
   }
+  const un = rows.reduce((s, u) => s + (u.unread || 0), 0);
+  document.title = (un ? '(' + un + ') ' : '') + 'Мессенджер';
   $('list').innerHTML = rows.length ? rows.map((u, i) => {
     const on = peer && peer.id === u.id ? ' on' : '';
     const pre = q ? '@' + esc(u.username) : (u.last.sender === me.id ? 'Вы: ' : '') + (u.last.image ? '🖼 Фото' + (u.last.body ? ', ' : '') : '') + esc(u.last.body);
@@ -287,7 +305,7 @@ async function openChat(u) {
   msgs = (data || []).reverse();
   $('empty').classList.add('hide'); $('pane').classList.remove('hide');
   $('app').classList.add('open');
-  head(); draw(); markSeen();
+  head(); draw(); markSeen(); if (innerWidth > 760) $('inp').focus();
 }
 function head() {
   if (!peer) return;
@@ -325,22 +343,27 @@ async function send(img) {
 $('send').onclick = () => send();
 $('inp').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); send() } };
 $('inp').oninput = function () { this.style.height = '46px'; this.style.height = Math.min(this.scrollHeight, 140) + 'px' };
-$('back').onclick = () => { $('app').classList.remove('open'); peer = null; loadList() };
+function closeChat() {
+  $('app').classList.remove('open'); peer = null;
+  if (innerWidth > 760) { $('pane').classList.add('hide'); $('empty').classList.remove('hide'); }
+  loadList();
+}
+$('back').onclick = closeChat;
 
 /* ---------- картинки ---------- */
 $('att').onclick = () => $('file').click();
-$('file').onchange = async e => {
-  const f = e.target.files[0]; e.target.value = '';
+async function uploadImage(f) {
   if (!f || !peer) return;
   const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' }[f.type];
   if (!ext) return toast('Поддерживаются JPG, PNG, WebP и GIF');
   if (f.size > 15 * 1024 * 1024) return toast('Картинка больше 15 МБ');
   toast('Отправка…');
-  const path = me.id + '/' + crypto.randomUUID() + '.' + ext;
+  const path = me.id + '/' + uuid() + '.' + ext;
   const { error } = await sb.storage.from('images').upload(path, f, { contentType: f.type });
   if (error) return toast('Не удалось загрузить картинку');
   send(path);
-};
+}
+$('file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; uploadImage(f) };
 $('msgs').onclick = e => { const i = e.target.closest('img[data-f]'); if (i) { lbPath = i.dataset.f; $('lbi').src = imgUrl(lbPath); $('lb').classList.remove('hide') } };
 $('lx').onclick = () => $('lb').classList.add('hide');
 $('lb').onclick = e => { if (e.target.classList.contains('im') || e.target === $('lb')) $('lb').classList.add('hide') };
@@ -418,6 +441,26 @@ $('vc').onclick = () => startCall(false);
 $('vv').onclick = () => startCall(true);
 $('cm').onclick = () => { micOn = !micOn; stream.getAudioTracks().forEach(t => t.enabled = micOn); $('cm').textContent = micOn ? '🎙' : '🔇' };
 $('cc').onclick = () => { camOn = !camOn; stream.getVideoTracks().forEach(t => t.enabled = camOn); $('cc').textContent = camOn ? '📷' : '🚫' };
+
+/* ---------- удобство на компьютере ---------- */
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('q').focus(); $('q').select(); return }
+  if (e.key !== 'Escape') return;
+  if (!$('lb').classList.contains('hide')) $('lb').classList.add('hide');
+  else if (!$('call').classList.contains('hide')) return;
+  else if (document.activeElement === $('q') && $('q').value) { $('q').value = ''; loadList() }
+  else if (peer) closeChat();
+});
+$('inp').addEventListener('paste', e => {
+  const f = [...((e.clipboardData && e.clipboardData.files) || [])].find(x => x.type.startsWith('image/'));
+  if (f) { e.preventDefault(); uploadImage(f) }
+});
+const mainEl = document.querySelector('.main');
+['dragenter', 'dragover'].forEach(ev => mainEl.addEventListener(ev, e => { e.preventDefault(); mainEl.classList.add('drop') }));
+['dragleave', 'drop'].forEach(ev => mainEl.addEventListener(ev, e => { e.preventDefault(); mainEl.classList.remove('drop') }));
+mainEl.addEventListener('drop', e => { const f = [...e.dataTransfer.files].find(x => x.type.startsWith('image/')); if (f) uploadImage(f) });
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => e.preventDefault());
 </script>
 </body>
 </html>
